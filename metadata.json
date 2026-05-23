@@ -1,0 +1,8 @@
+{
+  "name": "Touchpad Gestures Win",
+  "description": "Make touchpad gestures highly customisable to allow for smoother transition for users from other Operating Systems.",
+  "uuid": "touchpad-gestures@alpha.com",
+  "shell-version": [
+    "50"
+  ]
+}
