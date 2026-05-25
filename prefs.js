@@ -73,7 +73,7 @@ const TAP_ACTIONS = [
 ];
 
 // Gdk keyvals that are pure modifier keys — skip these during recording.
-// ONLY actual modifier keys are listed here. DO NOT use a broad range —
+// ONLY actual modifier keys are listed here. 
 // keys like Print (0xFF61), F1-F12 (0xFFBE-0xFFC9), arrows, Home, End,
 // Insert, Delete, Page Up/Down all live in 0xFE01-0xFFFF and MUST be recordable.
 const _MODIFIER_KEYVALS = new Set([
@@ -119,16 +119,16 @@ export default class TouchpadGesturesPreferences extends ExtensionPreferences {
 
         // [group, row-title, settings-key-prefix, action-list]
         const rows = [
-            [group3, 'Swipe Up',         'three-swipe-up',    VERTICAL_ACTIONS],
-            [group3, 'Swipe Down',       'three-swipe-down',  VERTICAL_ACTIONS],
-            [group3, 'Swipe Left',       'three-swipe-left',  LEFT_ACTIONS],
-            [group3, 'Swipe Right',      'three-swipe-right', RIGHT_ACTIONS],
-            [group3, 'Three-Finger Tap', 'three-tap',         TAP_ACTIONS],
-            [group4, 'Swipe Up',         'four-swipe-up',     VERTICAL_ACTIONS],
-            [group4, 'Swipe Down',       'four-swipe-down',   VERTICAL_ACTIONS],
-            [group4, 'Swipe Left',       'four-swipe-left',   LEFT_ACTIONS],
-            [group4, 'Swipe Right',      'four-swipe-right',  RIGHT_ACTIONS],
-            [group4, 'Four-Finger Tap',  'four-tap',          TAP_ACTIONS],
+            [group3, 'Swipe Up', 'three-swipe-up', VERTICAL_ACTIONS],
+            [group3, 'Swipe Down', 'three-swipe-down', VERTICAL_ACTIONS],
+            [group3, 'Swipe Left', 'three-swipe-left', LEFT_ACTIONS],
+            [group3, 'Swipe Right', 'three-swipe-right', RIGHT_ACTIONS],
+            [group3, 'Three-Finger Tap', 'three-tap', TAP_ACTIONS],
+            [group4, 'Swipe Up', 'four-swipe-up', VERTICAL_ACTIONS],
+            [group4, 'Swipe Down', 'four-swipe-down', VERTICAL_ACTIONS],
+            [group4, 'Swipe Left', 'four-swipe-left', LEFT_ACTIONS],
+            [group4, 'Swipe Right', 'four-swipe-right', RIGHT_ACTIONS],
+            [group4, 'Four-Finger Tap', 'four-tap', TAP_ACTIONS],
         ];
 
         for (const [group, title, prefix, actions] of rows)
@@ -147,7 +147,7 @@ export default class TouchpadGesturesPreferences extends ExtensionPreferences {
         group.add(combo);
 
         // Only show keybind recorder when Custom Keybind is selected
-        if (customIndex === -1) return; // Safety: no Custom option in this list
+        if (customIndex === -1) return;
 
         // ── Keybind recorder row (shown only for Custom Keybind) ─────────────
         const keybindRow = new Adw.ActionRow({
@@ -261,12 +261,8 @@ export default class TouchpadGesturesPreferences extends ExtensionPreferences {
                 // This is a real key — capture it!
                 captured = true;
 
-                // Try to get a more useful keyval from the keycode without modifiers
-                // This ensures we get the base key even when Shift changes it
                 let finalKeyval = keyval;
 
-                // For letter keys, normalize to lowercase (unshifted)
-                // The modifier mask already captures Shift, so we want the base key
                 if (keyval >= Gdk.KEY_A && keyval <= Gdk.KEY_Z) {
                     finalKeyval = keyval - Gdk.KEY_A + Gdk.KEY_a;
                 }
@@ -309,7 +305,7 @@ export default class TouchpadGesturesPreferences extends ExtensionPreferences {
             try {
                 const surface = dialog.get_surface?.() ?? null;
                 if (surface) surface.inhibit_system_shortcuts(null);
-            } catch (_) {}
+            } catch (_) { }
         });
 
         clearBtn.connect('clicked', () => {
