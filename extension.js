@@ -41,7 +41,11 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 const SWIPE_THRESHOLD = 15;
 
 // ── Tap detection: max duration in ms for a hold to count as tap ──────────────
-const TAP_MAX_DURATION_MS = 400;
+const TAP_MAX_DURATION_MS = 600;
+
+// ── Tap detection: max duration in ms for a CANCELLED hold to still count ─────
+// Light taps with tiny finger drift produce CANCEL instead of END.
+const TAP_CANCEL_MAX_MS = 300;
 
 // ── Volume/Brightness step per swipe-update delta pixel ───────────────────────
 const VOL_STEP_PER_PX    = 0.0012;  // ~0.12% per pixel — very slow and smooth
@@ -328,10 +332,12 @@ export default class TouchpadGesturesExtension extends Extension {
                         this._executeAction(key);
                         return GLib.SOURCE_REMOVE;
                     });
-                } else if (phase === Clutter.TouchpadGesturePhase.END) {
-                    // Small swipe (under threshold) might actually be a tap
+                } else {
+                    // Small swipe (under threshold) is likely a tap.
+                    // Accept both END and CANCEL — light taps with tiny drift
+                    // often produce CANCEL instead of END.
                     const key = `${prefix}-tap`;
-                    console.log(`${LOG} Tap (from swipe): ${key} (n=${n})`);
+                    console.log(`${LOG} Tap (from swipe ${phase === Clutter.TouchpadGesturePhase.CANCEL ? 'CANCEL' : 'END'}): ${key} (n=${n})`);
                     GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
                         this._executeAction(key);
                         return GLib.SOURCE_REMOVE;
@@ -378,6 +384,18 @@ export default class TouchpadGesturesExtension extends Extension {
             }
 
             if (phase === Clutter.TouchpadGesturePhase.CANCEL) {
+                // Light taps with tiny finger drift produce CANCEL instead of END.
+                // If the hold was short enough, treat it as a tap anyway.
+                const cancelElapsed = (GLib.get_monotonic_time() - this._holdStartTime) / 1000;
+                if (cancelElapsed <= TAP_CANCEL_MAX_MS && this._holdFingers >= 3) {
+                    const cancelPrefix = this._holdFingers === 4 ? 'four' : 'three';
+                    const cancelKey = `${cancelPrefix}-tap`;
+                    console.log(`${LOG} Tap (from cancelled hold): ${cancelKey} (n=${this._holdFingers}, ${cancelElapsed.toFixed(0)}ms)`);
+                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                        this._executeAction(cancelKey);
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
                 this._holdStartTime = 0;
                 this._holdFingers = 0;
                 return Clutter.EVENT_STOP;
