@@ -1,0 +1,7 @@
+{
+  "name": "Custom Touchpad Gestures",
+  "description": "Deeply customize 3 and 4-finger touchpad gestures.",
+  "uuid": "touchpad-gestures@alpha.com",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/Aradhya03/Touchpad-Gestures-Win"
+}
