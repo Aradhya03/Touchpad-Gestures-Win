@@ -51,9 +51,6 @@ const OSD_THROTTLE_MS = 120;
 // ── MPRIS D-Bus interface XML ─────────────────────────────────────────────────
 const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 
-// ── Log prefix ────────────────────────────────────────────────────────────────
-const LOG = '[TouchpadGestures]';
-
 // ── Action indices — MUST match dropdown order in prefs.js ───────────────────
 const V = { ACTIVITIES: 0, VOLUME: 1, BRIGHTNESS: 2, MAX_MIN: 3, CLOSE: 4, SHOW_DESKTOP: 5, CUSTOM: 6, DISABLED: 7 };
 const L = { WS_LEFT: 0, BRIGHT_DOWN: 1, ALTTAB_PREV: 2, MEDIA_PREV: 3, CUSTOM: 4, DISABLED: 5 };
@@ -65,7 +62,6 @@ const MAX_V = 7, MAX_L = 5, MAX_R = 5, MAX_T = 5;
 export default class TouchpadGesturesExtension extends Extension {
 
     enable() {
-        console.log(`${LOG} Enabling extension...`);
         this._settings = this.getSettings('org.gnome.shell.extensions.touchpad-gestures');
 
         // Virtual keyboard for key simulation
@@ -88,6 +84,9 @@ export default class TouchpadGesturesExtension extends Extension {
         // Signal connection IDs for cleanup
         this._signalIds = [];
 
+        // Track pending idle/timeout source IDs for cleanup in disable()
+        this._pendingSources = new Set();
+
         // ── Volume subsystem — reuse Shell's built-in MixerControl ────────────
         this._volumeControl = null;
 
@@ -98,7 +97,6 @@ export default class TouchpadGesturesExtension extends Extension {
         // Re-disable after shell startup
         if (Main.layoutManager._startingUp) {
             const id = Main.layoutManager.connect('startup-complete', () => {
-                console.log(`${LOG} startup-complete — re-disabling trackers`);
                 this._disableBuiltinTrackers();
             });
             this._signalIds.push({ obj: Main.layoutManager, id });
@@ -124,11 +122,9 @@ export default class TouchpadGesturesExtension extends Extension {
             (_actor, event) => this._onEvent(event)
         );
 
-        console.log(`${LOG} Extension enabled successfully`);
     }
 
     disable() {
-        console.log(`${LOG} Disabling extension...`);
 
         if (this._stageSignalId) {
             global.stage.disconnect(this._stageSignalId);
@@ -145,12 +141,19 @@ export default class TouchpadGesturesExtension extends Extension {
         }
         this._signalIds = [];
 
+        // Remove all pending idle/timeout sources
+        if (this._pendingSources) {
+            for (const srcId of this._pendingSources) {
+                GLib.source_remove(srcId);
+            }
+            this._pendingSources.clear();
+            this._pendingSources = null;
+        }
+
         this._restoreBuiltinTrackers();
         this._kb = null;
         this._settings = null;
         this._volumeControl = null;
-
-        console.log(`${LOG} Extension disabled`);
     }
 
     // ── GNOME tracker management
@@ -311,21 +314,13 @@ export default class TouchpadGesturesExtension extends Extension {
                         direction = this._dy > 0 ? 'swipe-down' : 'swipe-up';
                     }
                     const key = `${prefix}-${direction}`;
-                    console.log(`${LOG} Swipe: ${key} (dx=${this._dx.toFixed(1)}, dy=${this._dy.toFixed(1)}, n=${n})`);
-                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                        this._executeAction(key);
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    this._idleExec(() => this._executeAction(key));
                 } else if (phase === Clutter.TouchpadGesturePhase.END) {
                     // Small swipe (under threshold) might actually be a tap
                     const elapsed = (GLib.get_monotonic_time() - this._swipeStartTime) / 1000;
                     if (elapsed <= TAP_MAX_DURATION_MS) {
                         const key = `${prefix}-tap`;
-                        console.log(`${LOG} Tap (from swipe): ${key} (n=${n})`);
-                        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                            this._executeAction(key);
-                            return GLib.SOURCE_REMOVE;
-                        });
+                        this._idleExec(() => this._executeAction(key));
                     }
                 }
 
@@ -356,11 +351,7 @@ export default class TouchpadGesturesExtension extends Extension {
 
                 if (elapsed <= TAP_MAX_DURATION_MS) {
                     const key = `${prefix}-tap`;
-                    console.log(`${LOG} Tap: ${key} (n=${this._holdFingers}, ${elapsed.toFixed(0)}ms)`);
-                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                        this._executeAction(key);
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    this._idleExec(() => this._executeAction(key));
                 }
 
                 this._holdStartTime = 0;
@@ -392,11 +383,7 @@ export default class TouchpadGesturesExtension extends Extension {
                 }
 
                 if (key) {
-                    console.log(`${LOG} Tap (via button ${button}): ${key}`);
-                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                        this._executeAction(key);
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    this._idleExec(() => this._executeAction(key));
                     return Clutter.EVENT_STOP;
                 }
             }
@@ -407,8 +394,22 @@ export default class TouchpadGesturesExtension extends Extension {
 
     // ── Action dispatch ───────────────────────────────────────────────────────
 
+    /**
+     * Schedule a callback via GLib.idle_add, tracking the source ID
+     * so it can be removed in disable() if still pending.
+     */
+    _idleExec(fn) {
+        const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._pendingSources?.delete(id);
+            fn();
+            return GLib.SOURCE_REMOVE;
+        });
+        this._pendingSources?.add(id);
+    }
+
     _executeAction(key) {
-        const actionType = this._settings.get_int(`${key}-action`);
+        const actionType = this._settings?.get_int(`${key}-action`);
+        if (actionType === undefined || actionType === null) return;
 
         const isUp = key.endsWith('swipe-up');
         const isDown = key.endsWith('swipe-down');
@@ -416,8 +417,6 @@ export default class TouchpadGesturesExtension extends Extension {
         const isRight = key.endsWith('swipe-right');
         const isTap = key.endsWith('tap');
         const isVert = isUp || isDown;
-
-        console.log(`${LOG} Action: ${key} → type=${actionType}`);
 
         if (isVert) {
             if (actionType < 0 || actionType > MAX_V) return;
@@ -570,8 +569,8 @@ export default class TouchpadGesturesExtension extends Extension {
                     Gio.Icon.new_for_string(icon), null, level,
                 );
             }
-        } catch (e) {
-            console.log(`${LOG} Volume error: ${e.message}`);
+        } catch (_e) {
+            // Volume adjustment failed — ignore silently
         }
     }
 
@@ -580,16 +579,13 @@ export default class TouchpadGesturesExtension extends Extension {
     _brightness(isUp) {
         try {
             const scale = Main.brightnessManager?.globalScale;
-            if (!scale) {
-                console.log(`${LOG} Brightness: no globalScale available`);
-                return;
-            }
+            if (!scale) return;
             if (isUp)
                 scale.stepUp();
             else
                 scale.stepDown();
-        } catch (e) {
-            console.log(`${LOG} Brightness step error: ${e.message}`);
+        } catch (_e) {
+            // Brightness step failed — ignore silently
         }
     }
 
@@ -618,8 +614,8 @@ export default class TouchpadGesturesExtension extends Extension {
                     null, newVal,
                 );
             }
-        } catch (e) {
-            console.log(`${LOG} Brightness error: ${e.message}`);
+        } catch (_e) {
+            // Brightness continuous adjustment failed — ignore silently
         }
     }
 
@@ -633,12 +629,9 @@ export default class TouchpadGesturesExtension extends Extension {
         if (!method) return;
 
         if (cmd !== 'play-pause') {
-            console.log(`${LOG} Media: ${cmd} → simulating XF86 key`);
             this._simulateMediaKey(cmd);
             return;
         }
-
-        console.log(`${LOG} Media: ${cmd} → using MPRIS D-Bus directly`);
 
         // For play-pause: use MPRIS D-Bus only (no key simulation)
         Gio.DBus.session.call(
@@ -656,15 +649,12 @@ export default class TouchpadGesturesExtension extends Extension {
                     const mprisNames = names.filter(n => n.startsWith('org.mpris.MediaPlayer2.'));
 
                     if (mprisNames.length === 0) {
-                        console.log(`${LOG} No MPRIS players found, falling back to key simulation`);
                         this._simulateMediaKey(cmd);
                         return;
                     }
 
-                    console.log(`${LOG} Found ${mprisNames.length} MPRIS player(s): ${mprisNames.join(', ')}`);
                     this._tryMprisPlayers(mprisNames, 0, method, cmd);
-                } catch (e) {
-                    console.log(`${LOG} MPRIS ListNames error: ${e.message}`);
+                } catch (_e) {
                     this._simulateMediaKey(cmd);
                 }
             }
@@ -672,10 +662,7 @@ export default class TouchpadGesturesExtension extends Extension {
     }
 
     _tryMprisPlayers(players, idx, method, cmd) {
-        if (idx >= players.length) {
-            console.log(`${LOG} All MPRIS players exhausted`);
-            return;
-        }
+        if (idx >= players.length) return;
         const busName = players[idx];
         Gio.DBus.session.call(
             busName,
@@ -688,9 +675,7 @@ export default class TouchpadGesturesExtension extends Extension {
             (conn, res) => {
                 try {
                     conn.call_finish(res);
-                    console.log(`${LOG} MPRIS ${method} → ${busName} OK`);
-                } catch (e) {
-                    console.log(`${LOG} MPRIS ${method} failed on ${busName}: ${e.message}`);
+                } catch (_e) {
                     this._tryMprisPlayers(players, idx + 1, method, cmd);
                 }
             }
@@ -722,18 +707,15 @@ export default class TouchpadGesturesExtension extends Extension {
     // ── Custom keybind firing ─────────────────────────────────────────────────
 
     _fireKeybind(gestureKey) {
-        const stored = this._settings.get_string(`${gestureKey}-keybind`);
-        if (!stored || !stored.includes(':')) {
-            console.log(`${LOG} No keybind set for ${gestureKey}`);
-            return;
-        }
+        const stored = this._settings?.get_string(`${gestureKey}-keybind`);
+        if (!stored || !stored.includes(':')) return;
 
         const parts = stored.split(':');
         const keyval = parseInt(parts[0], 10);
         const mods = parseInt(parts[1], 10);
         if (!keyval) return;
 
-        console.log(`${LOG} Firing keybind: keyval=${keyval}, mods=${mods}`);
+
 
         const kb = this._kb;
 
