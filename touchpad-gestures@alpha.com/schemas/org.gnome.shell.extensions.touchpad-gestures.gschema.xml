@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.touchpad-gestures"
+          path="/org/gnome/shell/extensions/touchpad-gestures/">
+
+    <!-- ── Three-finger actions (integer = index into dropdown list) ── -->
+    <key name="three-swipe-up-action"    type="i"><default>6</default></key>
+    <key name="three-swipe-down-action"  type="i"><default>6</default></key>
+    <key name="three-swipe-left-action"  type="i"><default>5</default></key>
+    <key name="three-swipe-right-action" type="i"><default>5</default></key>
+    <key name="three-tap-action"         type="i"><default>5</default></key>
+
+    <!--
+      Keybind format: "KEYVAL:MODMASK" — both as decimal integers.
+      e.g. Ctrl+C = "99:4"   (keyval 99 = 'c', mod 4 = Ctrl)
+      Empty string = no keybind set.
+      Parsed by prefs.js (Gtk context) and consumed by extension.js (shell context)
+      without any cross-context API dependency.
+    -->
+    <key name="three-swipe-up-keybind"    type="s"><default>''</default></key>
+    <key name="three-swipe-down-keybind"  type="s"><default>''</default></key>
+    <key name="three-swipe-left-keybind"  type="s"><default>''</default></key>
+    <key name="three-swipe-right-keybind" type="s"><default>''</default></key>
+    <key name="three-tap-keybind"         type="s"><default>''</default></key>
+
+    <!-- ── Four-finger actions ── -->
+    <key name="four-swipe-up-action"    type="i"><default>6</default></key>
+    <key name="four-swipe-down-action"  type="i"><default>6</default></key>
+    <key name="four-swipe-left-action"  type="i"><default>5</default></key>
+    <key name="four-swipe-right-action" type="i"><default>5</default></key>
+    <key name="four-tap-action"         type="i"><default>5</default></key>
+
+    <key name="four-swipe-up-keybind"    type="s"><default>''</default></key>
+    <key name="four-swipe-down-keybind"  type="s"><default>''</default></key>
+    <key name="four-swipe-left-keybind"  type="s"><default>''</default></key>
+    <key name="four-swipe-right-keybind" type="s"><default>''</default></key>
+    <key name="four-tap-keybind"         type="s"><default>''</default></key>
+
+  </schema>
+</schemalist>
