@@ -62,7 +62,7 @@ const MAX_V = 7, MAX_L = 5, MAX_R = 5, MAX_T = 5;
 export default class TouchpadGesturesExtension extends Extension {
 
     enable() {
-        this._settings = this.getSettings('org.gnome.shell.extensions.touchpad-gestures');
+        this._settings = this.getSettings();
 
         // Virtual keyboard for key simulation
         const seat = Clutter.get_default_backend().get_default_seat();
@@ -81,8 +81,6 @@ export default class TouchpadGesturesExtension extends Extension {
         // OSD throttle timestamp
         this._lastOsdTime = 0;
 
-        // Signal connection IDs for cleanup
-        this._signalIds = [];
 
         // Track pending idle/timeout source IDs for cleanup in disable()
         this._pendingSources = new Set();
@@ -96,19 +94,17 @@ export default class TouchpadGesturesExtension extends Extension {
 
         // Re-disable after shell startup
         if (Main.layoutManager._startingUp) {
-            const id = Main.layoutManager.connect('startup-complete', () => {
+            Main.layoutManager.connectObject('startup-complete', () => {
                 this._disableBuiltinTrackers();
-            });
-            this._signalIds.push({ obj: Main.layoutManager, id });
+            }, this);
         }
 
         // Re-disable on overview state changes
-        for (const sig of ['showing', 'hidden']) {
-            const id = Main.overview.connect(sig, () => {
-                this._disableBuiltinTrackers();
-            });
-            this._signalIds.push({ obj: Main.overview, id });
-        }
+        Main.overview.connectObject(
+            'showing', () => this._disableBuiltinTrackers(),
+            'hidden', () => this._disableBuiltinTrackers(),
+            this,
+        );
 
         // Watchdog: re-disable trackers periodically
         this._watchdogId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
@@ -136,10 +132,8 @@ export default class TouchpadGesturesExtension extends Extension {
             this._watchdogId = null;
         }
 
-        for (const { obj, id } of this._signalIds) {
-            try { obj.disconnect(id); } catch (_) { }
-        }
-        this._signalIds = [];
+        Main.layoutManager.disconnectObject(this);
+        Main.overview.disconnectObject(this);
 
         // Remove all pending idle/timeout sources
         if (this._pendingSources) {
