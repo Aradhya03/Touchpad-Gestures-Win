@@ -30,7 +30,7 @@ import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/
 
 // ── Action lists — ORDER MUST MATCH constants in extension.js ────────────────
 
-// Vertical: index 0-6 matches V.* in extension.js
+// Vertical: index 0-8 matches V.* in extension.js
 const VERTICAL_ACTIONS = [
     'Show Activities',          // 0
     'Volume Up / Down',         // 1
@@ -40,9 +40,10 @@ const VERTICAL_ACTIONS = [
     'Show Desktop',             // 5
     'Custom Keybind',           // 6
     'Disabled',                 // 7
+    'Default Behavior',         // 8
 ];
 
-// Left: index 0-5 matches L.* in extension.js
+// Left: index 0-6 matches L.* in extension.js
 const LEFT_ACTIONS = [
     'Workspace Left',           // 0
     'Brightness Down',          // 1
@@ -50,9 +51,10 @@ const LEFT_ACTIONS = [
     'Previous Media Track',     // 3
     'Custom Keybind',           // 4
     'Disabled',                 // 5
+    'Default Behavior',         // 6
 ];
 
-// Right: index 0-5 matches R.* in extension.js
+// Right: index 0-6 matches R.* in extension.js
 const RIGHT_ACTIONS = [
     'Workspace Right',          // 0
     'Brightness Up',            // 1
@@ -60,6 +62,7 @@ const RIGHT_ACTIONS = [
     'Next Media Track',         // 3
     'Custom Keybind',           // 4
     'Disabled',                 // 5
+    'Default Behavior',         // 6
 ];
 
 // Tap: index 0-5 matches T.* in extension.js
