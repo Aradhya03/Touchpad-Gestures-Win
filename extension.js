@@ -51,13 +51,12 @@ const OSD_THROTTLE_MS = 120;
 // ── MPRIS D-Bus interface XML ─────────────────────────────────────────────────
 const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 
-// ── Action indices — MUST match dropdown order in prefs.js ───────────────────
-const V = { ACTIVITIES: 0, VOLUME: 1, BRIGHTNESS: 2, MAX_MIN: 3, CLOSE: 4, SHOW_DESKTOP: 5, CUSTOM: 6, DISABLED: 7 };
-const L = { WS_LEFT: 0, BRIGHT_DOWN: 1, ALTTAB_PREV: 2, MEDIA_PREV: 3, CUSTOM: 4, DISABLED: 5 };
-const R = { WS_RIGHT: 0, BRIGHT_UP: 1, ALTTAB_NEXT: 2, MEDIA_NEXT: 3, CUSTOM: 4, DISABLED: 5 };
+const V = { ACTIVITIES: 0, VOLUME: 1, BRIGHTNESS: 2, MAX_MIN: 3, CLOSE: 4, SHOW_DESKTOP: 5, CUSTOM: 6, DISABLED: 7, DEFAULT: 8 };
+const L = { WS_LEFT: 0, BRIGHT_DOWN: 1, ALTTAB_PREV: 2, MEDIA_PREV: 3, CUSTOM: 4, DISABLED: 5, DEFAULT: 6 };
+const R = { WS_RIGHT: 0, BRIGHT_UP: 1, ALTTAB_NEXT: 2, MEDIA_NEXT: 3, CUSTOM: 4, DISABLED: 5, DEFAULT: 6 };
 const T = { PLAY_PAUSE: 0, SHOW_DESKTOP: 1, CYCLE_WS: 2, NOTIFS: 3, CUSTOM: 4, DISABLED: 5 };
 
-const MAX_V = 7, MAX_L = 5, MAX_R = 5, MAX_T = 5;
+const MAX_V = 8, MAX_L = 6, MAX_R = 6, MAX_T = 5;
 
 export default class TouchpadGesturesExtension extends Extension {
 
@@ -77,6 +76,7 @@ export default class TouchpadGesturesExtension extends Extension {
         // Continuous swipe state (for volume/brightness during UPDATE)
         this._swipeContinuousAction = null; // 'volume' | 'brightness' | null
         this._swipeDirectionLocked = false;
+        this._gnomeTrackerActive = false;
 
         // OSD throttle timestamp
         this._lastOsdTime = 0;
@@ -152,45 +152,85 @@ export default class TouchpadGesturesExtension extends Extension {
 
     // ── GNOME tracker management
     _disableBuiltinTrackers() {
-        const trackerGetters = [
+        const verticalGetters = [
             () => Main.overview?._swipeTracker,
-            () => Main.wm?._workspaceAnimation?._swipeTracker,
-            () => Main.overview?._overview?.controls?._workspacesDisplay?._swipeTracker,
             () => Main.overview?._overview?.controls?._swipeTracker,
-            () => Main.wm?._swipeTracker,
             () => Main.overview?._overview?.controls?._appDisplay?._swipeTracker,
         ];
+        const horizontalGetters = [
+            () => Main.wm?._workspaceAnimation?._swipeTracker,
+            () => Main.overview?._overview?.controls?._workspacesDisplay?._swipeTracker,
+            () => Main.wm?._swipeTracker,
+        ];
 
-        for (const getter of trackerGetters) {
+        let useDefaultVertical = false;
+        let useDefaultHorizontal = false;
+
+        if (this._settings) {
             try {
-                const tracker = getter();
-                if (!tracker) continue;
-
-                // Only save state first time we see this tracker
-                if (!this._savedTrackerState.some(s => s.tracker === tracker)) {
-                    this._savedTrackerState.push({
-                        tracker,
-                        wasEnabled: tracker.enabled ?? true,
-                        touchpadGestureEnabled: tracker._touchpadGesture?.enabled ?? true,
-                    });
+                const threeUp = this._settings.get_int('three-swipe-up-action');
+                const threeDown = this._settings.get_int('three-swipe-down-action');
+                const fourUp = this._settings.get_int('four-swipe-up-action');
+                const fourDown = this._settings.get_int('four-swipe-down-action');
+                if (threeUp === V.DEFAULT || threeDown === V.DEFAULT || fourUp === V.DEFAULT || fourDown === V.DEFAULT) {
+                    useDefaultVertical = true;
                 }
+            } catch (_) {}
 
-                // Level 1: Disable the SwipeTracker itself
+            try {
+                const threeLeft = this._settings.get_int('three-swipe-left-action');
+                const threeRight = this._settings.get_int('three-swipe-right-action');
+                const fourLeft = this._settings.get_int('four-swipe-left-action');
+                const fourRight = this._settings.get_int('four-swipe-right-action');
+                if (threeLeft === L.DEFAULT || threeRight === R.DEFAULT || fourLeft === L.DEFAULT || fourRight === R.DEFAULT) {
+                    useDefaultHorizontal = true;
+                }
+            } catch (_) {}
+        }
+
+        const processTracker = (tracker, shouldDisable) => {
+            if (!tracker) return;
+
+            // Only save state first time we see this tracker
+            if (!this._savedTrackerState.some(s => s.tracker === tracker)) {
+                this._savedTrackerState.push({
+                    tracker,
+                    wasEnabled: tracker.enabled ?? true,
+                    touchpadGestureEnabled: tracker._touchpadGesture?.enabled ?? true,
+                });
+            }
+
+            if (shouldDisable) {
+                // Disable
                 if (tracker.enabled !== undefined)
                     tracker.enabled = false;
-
-                // Level 2: Disable the internal TouchpadSwipeGesture
-                if (tracker._touchpadGesture) {
+                if (tracker._touchpadGesture)
                     tracker._touchpadGesture.enabled = false;
-                }
-
-                // Level 3: Disable internal PanGesture action
-                if (tracker._panGesture) {
+                if (tracker._panGesture)
                     tracker._panGesture.enabled = false;
+            } else {
+                // Restore (enable)
+                const saved = this._savedTrackerState.find(s => s.tracker === tracker);
+                if (saved) {
+                    if (tracker.enabled !== undefined)
+                        tracker.enabled = saved.wasEnabled;
+                    if (tracker._touchpadGesture)
+                        tracker._touchpadGesture.enabled = saved.touchpadGestureEnabled;
+                    if (tracker._panGesture)
+                        tracker._panGesture.enabled = true;
                 }
-            } catch (e) {
-                // Path doesn't exist on this GNOME version — ignore
             }
+        };
+
+        for (const getter of verticalGetters) {
+            try {
+                processTracker(getter(), !useDefaultVertical);
+            } catch (_) {}
+        }
+        for (const getter of horizontalGetters) {
+            try {
+                processTracker(getter(), !useDefaultHorizontal);
+            } catch (_) {}
         }
     }
 
@@ -221,14 +261,36 @@ export default class TouchpadGesturesExtension extends Extension {
             // Only handle 3 and 4 finger gestures
             if (n < 3 || n > 4) return Clutter.EVENT_PROPAGATE;
 
+            const prefix = n === 4 ? 'four' : 'three';
+            let hasDefault = false;
+            if (this._settings) {
+                try {
+                    hasDefault =
+                        this._settings.get_int(`${prefix}-swipe-up-action`) === V.DEFAULT ||
+                        this._settings.get_int(`${prefix}-swipe-down-action`) === V.DEFAULT ||
+                        this._settings.get_int(`${prefix}-swipe-left-action`) === L.DEFAULT ||
+                        this._settings.get_int(`${prefix}-swipe-right-action`) === R.DEFAULT;
+                } catch (_) {}
+            }
+
             if (phase === Clutter.TouchpadGesturePhase.BEGIN) {
                 this._dx = 0;
                 this._dy = 0;
                 this._swipeStartTime = GLib.get_monotonic_time();
                 this._swipeContinuousAction = null;
                 this._swipeDirectionLocked = false;
-                this._swipePrefix = n === 4 ? 'four' : 'three';
-                return Clutter.EVENT_STOP;
+                this._swipePrefix = prefix;
+
+                if (hasDefault) {
+                    this._gnomeTrackerActive = true;
+                    if (n === 4) {
+                        event.get_touchpad_gesture_finger_count = () => 3;
+                    }
+                    return Clutter.EVENT_PROPAGATE;
+                } else {
+                    this._gnomeTrackerActive = false;
+                    return Clutter.EVENT_STOP;
+                }
             }
 
             if (phase === Clutter.TouchpadGesturePhase.UPDATE) {
@@ -236,34 +298,60 @@ export default class TouchpadGesturesExtension extends Extension {
                 this._dx += dx;
                 this._dy += dy;
 
-                // Once we pass threshold, lock direction and check if continuous
-                if (!this._swipeDirectionLocked) {
-                    const adx = Math.abs(this._dx);
-                    const ady = Math.abs(this._dy);
-                    if (Math.max(adx, ady) >= SWIPE_THRESHOLD) {
-                        this._swipeDirectionLocked = true;
-                        let direction;
-                        if (adx >= ady)
-                            direction = this._dx > 0 ? 'swipe-right' : 'swipe-left';
-                        else
-                            direction = this._dy > 0 ? 'swipe-down' : 'swipe-up';
+                if (this._gnomeTrackerActive) {
+                    if (!this._swipeDirectionLocked) {
+                        const adx = Math.abs(this._dx);
+                        const ady = Math.abs(this._dy);
+                        if (Math.max(adx, ady) >= SWIPE_THRESHOLD) {
+                            this._swipeDirectionLocked = true;
+                            let direction;
+                            if (adx >= ady)
+                                direction = this._dx > 0 ? 'swipe-right' : 'swipe-left';
+                            else
+                                direction = this._dy > 0 ? 'swipe-down' : 'swipe-up';
 
-                        const key = `${this._swipePrefix}-${direction}`;
-                        const actionType = this._settings.get_int(`${key}-action`);
-                        this._swipeKey = key;
+                            const isVert = direction === 'swipe-up' || direction === 'swipe-down';
+                            const key = `${prefix}-${direction}`;
+                            this._swipeKey = key;
 
-                        // Determine if this is a continuous action
-                        const isVert = direction === 'swipe-up' || direction === 'swipe-down';
-                        if (isVert && actionType === V.VOLUME)
-                            this._swipeContinuousAction = 'volume';
-                        else if (isVert && actionType === V.BRIGHTNESS)
-                            this._swipeContinuousAction = 'brightness';
-                        else if (!isVert && (direction === 'swipe-left' || direction === 'swipe-right')) {
-                            const isLeft = direction === 'swipe-left';
-                            if ((isLeft && actionType === L.BRIGHT_DOWN) ||
-                                (!isLeft && actionType === R.BRIGHT_UP))
-                                this._swipeContinuousAction = 'brightness';
+                            let actionType = -1;
+                            try {
+                                actionType = this._settings.get_int(`${key}-action`);
+                            } catch (_) {}
+
+                            const isDefault = isVert ? (actionType === V.DEFAULT) : (actionType === L.DEFAULT || actionType === R.DEFAULT);
+
+                            if (!isDefault) {
+                                // Direction locked to a non-default action: cancel GNOME tracker!
+                                event.get_gesture_phase = () => Clutter.TouchpadGesturePhase.CANCEL;
+                                if (n === 4) {
+                                    event.get_touchpad_gesture_finger_count = () => 3;
+                                }
+                                global.stage.event(event); // propagate cancel
+                                this._gnomeTrackerActive = false;
+
+                                // Initialize extension continuous actions if applicable
+                                if (isVert && actionType === V.VOLUME)
+                                    this._swipeContinuousAction = 'volume';
+                                else if (isVert && actionType === V.BRIGHTNESS)
+                                    this._swipeContinuousAction = 'brightness';
+                                else if (!isVert && (direction === 'swipe-left' || direction === 'swipe-right')) {
+                                    const isLeft = direction === 'swipe-left';
+                                    if ((isLeft && actionType === L.BRIGHT_DOWN) ||
+                                        (!isLeft && actionType === R.BRIGHT_UP))
+                                        this._swipeContinuousAction = 'brightness';
+                                }
+
+                                return Clutter.EVENT_STOP;
+                            }
                         }
+                    }
+
+                    if (this._gnomeTrackerActive) {
+                        if (n === 4) {
+                            event.get_touchpad_gesture_finger_count = () => 3;
+                        }
+                        return Clutter.EVENT_PROPAGATE;
                     }
                 }
 
@@ -288,6 +376,14 @@ export default class TouchpadGesturesExtension extends Extension {
             if (phase === Clutter.TouchpadGesturePhase.END ||
                 phase === Clutter.TouchpadGesturePhase.CANCEL) {
 
+                if (this._gnomeTrackerActive) {
+                    this._gnomeTrackerActive = false;
+                    if (n === 4) {
+                        event.get_touchpad_gesture_finger_count = () => 3;
+                    }
+                    return Clutter.EVENT_PROPAGATE;
+                }
+
                 // If it was a continuous action, we already applied it during UPDATE
                 if (this._swipeContinuousAction) {
                     this._swipeContinuousAction = null;
@@ -298,7 +394,6 @@ export default class TouchpadGesturesExtension extends Extension {
 
                 const adx = Math.abs(this._dx);
                 const ady = Math.abs(this._dy);
-                const prefix = this._swipePrefix || (n === 4 ? 'four' : 'three');
 
                 if (Math.max(adx, ady) >= SWIPE_THRESHOLD) {
                     let direction;
@@ -450,6 +545,9 @@ export default class TouchpadGesturesExtension extends Extension {
                 case V.CUSTOM:
                     this._fireKeybind(key);
                     break;
+                case V.DEFAULT:
+                    // Handled by event propagation, do nothing
+                    break;
                 // V.DISABLED: do nothing
             }
             return;
@@ -463,6 +561,8 @@ export default class TouchpadGesturesExtension extends Extension {
                 case L.ALTTAB_PREV: this._altTab(false); break;
                 case L.MEDIA_PREV: this._media('previous'); break;
                 case L.CUSTOM: this._fireKeybind(key); break;
+                case L.DEFAULT: // Handled by event propagation, do nothing
+                    break;
             }
             return;
         }
@@ -475,6 +575,8 @@ export default class TouchpadGesturesExtension extends Extension {
                 case R.ALTTAB_NEXT: this._altTab(true); break;
                 case R.MEDIA_NEXT: this._media('next'); break;
                 case R.CUSTOM: this._fireKeybind(key); break;
+                case R.DEFAULT: // Handled by event propagation, do nothing
+                    break;
             }
             return;
         }
