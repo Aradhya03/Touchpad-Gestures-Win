@@ -162,6 +162,7 @@ export default class TouchpadGesturesExtension extends Extension {
         ];
 
         for (const getter of trackerGetters) {
+<<<<<<< HEAD
             const tracker = getter();
             if (!tracker) continue;
 
@@ -186,18 +187,59 @@ export default class TouchpadGesturesExtension extends Extension {
             // Level 3: Disable internal PanGesture action
             if (tracker._panGesture) {
                 tracker._panGesture.enabled = false;
+=======
+            try {
+                const tracker = getter();
+                if (!tracker) continue;
+
+                // Only save state first time we see this tracker
+                if (!this._savedTrackerState.some(s => s.tracker === tracker)) {
+                    this._savedTrackerState.push({
+                        tracker,
+                        wasEnabled: tracker.enabled ?? true,
+                        touchpadGestureEnabled: tracker._touchpadGesture?.enabled ?? true,
+                    });
+                }
+
+                // Level 1: Disable the SwipeTracker itself
+                if (tracker.enabled !== undefined)
+                    tracker.enabled = false;
+
+                // Level 2: Disable the internal TouchpadSwipeGesture
+                if (tracker._touchpadGesture) {
+                    tracker._touchpadGesture.enabled = false;
+                }
+
+                // Level 3: Disable internal PanGesture action
+                if (tracker._panGesture) {
+                    tracker._panGesture.enabled = false;
+                }
+            } catch (e) {
+                // Path doesn't exist on this GNOME version — ignore
+>>>>>>> origin/main
             }
         }
     }
 
     _restoreBuiltinTrackers() {
         for (const saved of this._savedTrackerState) {
+<<<<<<< HEAD
             if (saved.tracker.enabled !== undefined)
                 saved.tracker.enabled = saved.wasEnabled;
             if (saved.tracker._touchpadGesture)
                 saved.tracker._touchpadGesture.enabled = saved.touchpadGestureEnabled;
             if (saved.tracker._panGesture)
                 saved.tracker._panGesture.enabled = true;
+=======
+            try {
+                if (saved.tracker.enabled !== undefined)
+                    saved.tracker.enabled = saved.wasEnabled;
+                if (saved.tracker._touchpadGesture)
+                    saved.tracker._touchpadGesture.enabled = saved.touchpadGestureEnabled;
+                if (saved.tracker._panGesture)
+                    saved.tracker._panGesture.enabled = true;
+            } catch (_) { }
+>>>>>>> origin/main
         }
         this._savedTrackerState = [];
     }
@@ -406,6 +448,7 @@ export default class TouchpadGesturesExtension extends Extension {
         const isTap = key.endsWith('tap');
         const isVert = isUp || isDown;
 
+<<<<<<< HEAD
         // ── Overview/App-Grid hierarchical navigation ─────────────────────
         // When inside the overview or app grid, vertical swipes navigate
         // the hierarchy:  Desktop  ↔  Activities  ↔  App Grid
@@ -438,12 +481,18 @@ export default class TouchpadGesturesExtension extends Extension {
             }
         }
 
+=======
+>>>>>>> origin/main
         if (isVert) {
             if (actionType < 0 || actionType > MAX_V) return;
             switch (actionType) {
                 case V.ACTIVITIES:
+<<<<<<< HEAD
                     // From desktop: open activities overview
                     Main.overview.show();
+=======
+                    Main.overview.toggle();
+>>>>>>> origin/main
                     break;
                 case V.VOLUME:
                     this._volume(isUp);
@@ -528,6 +577,7 @@ export default class TouchpadGesturesExtension extends Extension {
             wm.get_workspace_by_index(idx).activate(global.get_current_time());
     }
 
+<<<<<<< HEAD
     // ── App grid detection & navigation ───────────────────────────────────
     // These helpers enable hierarchical traversal:
     //   Desktop  ↔  Activities Overview  ↔  App Grid
@@ -565,6 +615,8 @@ export default class TouchpadGesturesExtension extends Extension {
         }
     }
 
+=======
+>>>>>>> origin/main
     // ── Show desktop ──────────────────────────────────────────────────────────
 
     _showDesktop() {
@@ -592,6 +644,7 @@ export default class TouchpadGesturesExtension extends Extension {
     // ── Continuous volume (called per UPDATE event) ────────────────────────
 
     _volumeContinuous(delta) {
+<<<<<<< HEAD
         if (!this._volumeControl) {
             this._volumeControl =
                 Main.panel?.statusArea?.quickSettings?._volumeOutput?._control ?? null;
@@ -625,23 +678,76 @@ export default class TouchpadGesturesExtension extends Extension {
                 Main.layoutManager.primaryIndex,
                 Gio.Icon.new_for_string(icon), null, level,
             );
+=======
+        try {
+            if (!this._volumeControl) {
+                this._volumeControl =
+                    Main.panel?.statusArea?.quickSettings?._volumeOutput?._control ?? null;
+            }
+            const ctrl = this._volumeControl;
+            if (!ctrl) return;
+
+            const stream = ctrl.get_default_sink();
+            if (!stream) return;
+
+            const maxVol = ctrl.get_vol_max_norm();
+            const cur = stream.volume;
+            const step = maxVol * VOL_STEP_PER_PX * Math.abs(delta);
+            let newVol = delta > 0 ? cur + step : cur - step;
+            newVol = Math.max(0, Math.min(maxVol, newVol));
+
+            stream.volume = newVol;
+            stream.push_volume();
+
+            // Throttle OSD to avoid choppiness
+            const now = GLib.get_monotonic_time() / 1000;
+            if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
+                this._lastOsdTime = now;
+                const level = newVol / maxVol;
+                const icon = level <= 0 ? 'audio-volume-muted-symbolic'
+                    : level < 0.33 ? 'audio-volume-low-symbolic'
+                        : level < 0.66 ? 'audio-volume-medium-symbolic'
+                            : 'audio-volume-high-symbolic';
+                // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
+                Main.osdWindowManager.showOne(
+                    Main.layoutManager.primaryIndex,
+                    Gio.Icon.new_for_string(icon), null, level,
+                );
+            }
+        } catch (_e) {
+            // Volume adjustment failed — ignore silently
+>>>>>>> origin/main
         }
     }
 
     // ── Brightness control (single step, used by discrete actions) ─────────
 
     _brightness(isUp) {
+<<<<<<< HEAD
         const scale = Main.brightnessManager?.globalScale;
         if (!scale) return;
         if (isUp)
             scale.stepUp();
         else
             scale.stepDown();
+=======
+        try {
+            const scale = Main.brightnessManager?.globalScale;
+            if (!scale) return;
+            if (isUp)
+                scale.stepUp();
+            else
+                scale.stepDown();
+        } catch (_e) {
+            // Brightness step failed — ignore silently
+        }
+>>>>>>> origin/main
     }
 
     // ── Continuous brightness (called per UPDATE event) ────────────────────
 
     _brightnessContinuous(delta) {
+<<<<<<< HEAD
         const scale = Main.brightnessManager?.globalScale;
         if (!scale) return;
 
@@ -662,6 +768,32 @@ export default class TouchpadGesturesExtension extends Extension {
                 Gio.Icon.new_for_string('display-brightness-symbolic'),
                 null, newVal,
             );
+=======
+        try {
+            const scale = Main.brightnessManager?.globalScale;
+            if (!scale) return;
+
+            const step = BRIGHT_STEP_PER_PX * Math.abs(delta);
+            let newVal = delta > 0 ? scale.value + step : scale.value - step;
+            newVal = Math.max(0, Math.min(1.0, newVal));
+            scale.value = newVal;
+
+            // OSD is handled by BrightnessManager itself via _showOSD(),
+            // but we throttle an extra OSD call here for visual feedback
+            // in case the internal one doesn't trigger.
+            const now = GLib.get_monotonic_time() / 1000;
+            if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
+                this._lastOsdTime = now;
+                // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
+                Main.osdWindowManager.showOne(
+                    Main.layoutManager.primaryIndex,
+                    Gio.Icon.new_for_string('display-brightness-symbolic'),
+                    null, newVal,
+                );
+            }
+        } catch (_e) {
+            // Brightness continuous adjustment failed — ignore silently
+>>>>>>> origin/main
         }
     }
 
@@ -689,6 +821,7 @@ export default class TouchpadGesturesExtension extends Extension {
             new GLib.VariantType('(as)'),
             Gio.DBusCallFlags.NONE, -1, null,
             (conn, res) => {
+<<<<<<< HEAD
                 const result = conn.call_finish(res);
                 const names = result.get_child_value(0).deepUnpack();
                 const mprisNames = names.filter(n => n.startsWith('org.mpris.MediaPlayer2.'));
@@ -699,6 +832,22 @@ export default class TouchpadGesturesExtension extends Extension {
                 }
 
                 this._tryMprisPlayers(mprisNames, 0, method, cmd);
+=======
+                try {
+                    const result = conn.call_finish(res);
+                    const names = result.get_child_value(0).deepUnpack();
+                    const mprisNames = names.filter(n => n.startsWith('org.mpris.MediaPlayer2.'));
+
+                    if (mprisNames.length === 0) {
+                        this._simulateMediaKey(cmd);
+                        return;
+                    }
+
+                    this._tryMprisPlayers(mprisNames, 0, method, cmd);
+                } catch (_e) {
+                    this._simulateMediaKey(cmd);
+                }
+>>>>>>> origin/main
             }
         );
     }
@@ -715,7 +864,15 @@ export default class TouchpadGesturesExtension extends Extension {
             null,
             Gio.DBusCallFlags.NONE, -1, null,
             (conn, res) => {
+<<<<<<< HEAD
                 conn.call_finish(res);
+=======
+                try {
+                    conn.call_finish(res);
+                } catch (_e) {
+                    this._tryMprisPlayers(players, idx + 1, method, cmd);
+                }
+>>>>>>> origin/main
             }
         );
     }
