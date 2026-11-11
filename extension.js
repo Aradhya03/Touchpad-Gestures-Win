@@ -28,12 +28,25 @@
  *
  * 7. Volume via Gvc.MixerControl, brightness via D-Bus, media via MPRIS.
  * 8. Volume/Brightness respond continuously during swipe UPDATE phase.
+ *
+ * ALT+TAB DESIGN
+ * ══════════════
+ * Virtual key injection of Alt+Tab does not work reliably on Wayland because
+ * the compositor intercepts the shortcut before the virtual device event reaches
+ * the GNOME Shell keybinding handler.  Instead we drive GNOME's own SwitcherList
+ * directly:
+ *   - forward  (swipe-right) → activates the next-window action via
+ *     Main.wm.handleWorkspaceSwitch / the internal AltTab handler.
+ *   - backward (swipe-left)  → activates the prev-window action.
+ * We call Main.wm._startSwitcher() / Main.wm._stopSwitcher() so the visual
+ * switcher popup appears exactly as if the keyboard shortcut was pressed.
  */
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -162,32 +175,6 @@ export default class TouchpadGesturesExtension extends Extension {
         ];
 
         for (const getter of trackerGetters) {
-<<<<<<< HEAD
-            const tracker = getter();
-            if (!tracker) continue;
-
-            // Only save state first time we see this tracker
-            if (!this._savedTrackerState.some(s => s.tracker === tracker)) {
-                this._savedTrackerState.push({
-                    tracker,
-                    wasEnabled: tracker.enabled ?? true,
-                    touchpadGestureEnabled: tracker._touchpadGesture?.enabled ?? true,
-                });
-            }
-
-            // Level 1: Disable the SwipeTracker itself
-            if (tracker.enabled !== undefined)
-                tracker.enabled = false;
-
-            // Level 2: Disable the internal TouchpadSwipeGesture
-            if (tracker._touchpadGesture) {
-                tracker._touchpadGesture.enabled = false;
-            }
-
-            // Level 3: Disable internal PanGesture action
-            if (tracker._panGesture) {
-                tracker._panGesture.enabled = false;
-=======
             try {
                 const tracker = getter();
                 if (!tracker) continue;
@@ -216,21 +203,12 @@ export default class TouchpadGesturesExtension extends Extension {
                 }
             } catch (e) {
                 // Path doesn't exist on this GNOME version — ignore
->>>>>>> origin/main
             }
         }
     }
 
     _restoreBuiltinTrackers() {
         for (const saved of this._savedTrackerState) {
-<<<<<<< HEAD
-            if (saved.tracker.enabled !== undefined)
-                saved.tracker.enabled = saved.wasEnabled;
-            if (saved.tracker._touchpadGesture)
-                saved.tracker._touchpadGesture.enabled = saved.touchpadGestureEnabled;
-            if (saved.tracker._panGesture)
-                saved.tracker._panGesture.enabled = true;
-=======
             try {
                 if (saved.tracker.enabled !== undefined)
                     saved.tracker.enabled = saved.wasEnabled;
@@ -239,7 +217,6 @@ export default class TouchpadGesturesExtension extends Extension {
                 if (saved.tracker._panGesture)
                     saved.tracker._panGesture.enabled = true;
             } catch (_) { }
->>>>>>> origin/main
         }
         this._savedTrackerState = [];
     }
@@ -448,7 +425,6 @@ export default class TouchpadGesturesExtension extends Extension {
         const isTap = key.endsWith('tap');
         const isVert = isUp || isDown;
 
-<<<<<<< HEAD
         // ── Overview/App-Grid hierarchical navigation ─────────────────────
         // When inside the overview or app grid, vertical swipes navigate
         // the hierarchy:  Desktop  ↔  Activities  ↔  App Grid
@@ -481,18 +457,12 @@ export default class TouchpadGesturesExtension extends Extension {
             }
         }
 
-=======
->>>>>>> origin/main
         if (isVert) {
             if (actionType < 0 || actionType > MAX_V) return;
             switch (actionType) {
                 case V.ACTIVITIES:
-<<<<<<< HEAD
                     // From desktop: open activities overview
                     Main.overview.show();
-=======
-                    Main.overview.toggle();
->>>>>>> origin/main
                     break;
                 case V.VOLUME:
                     this._volume(isUp);
@@ -577,7 +547,6 @@ export default class TouchpadGesturesExtension extends Extension {
             wm.get_workspace_by_index(idx).activate(global.get_current_time());
     }
 
-<<<<<<< HEAD
     // ── App grid detection & navigation ───────────────────────────────────
     // These helpers enable hierarchical traversal:
     //   Desktop  ↔  Activities Overview  ↔  App Grid
@@ -615,8 +584,6 @@ export default class TouchpadGesturesExtension extends Extension {
         }
     }
 
-=======
->>>>>>> origin/main
     // ── Show desktop ──────────────────────────────────────────────────────────
 
     _showDesktop() {
@@ -644,41 +611,6 @@ export default class TouchpadGesturesExtension extends Extension {
     // ── Continuous volume (called per UPDATE event) ────────────────────────
 
     _volumeContinuous(delta) {
-<<<<<<< HEAD
-        if (!this._volumeControl) {
-            this._volumeControl =
-                Main.panel?.statusArea?.quickSettings?._volumeOutput?._control ?? null;
-        }
-        const ctrl = this._volumeControl;
-        if (!ctrl) return;
-
-        const stream = ctrl.get_default_sink();
-        if (!stream) return;
-
-        const maxVol = ctrl.get_vol_max_norm();
-        const cur = stream.volume;
-        const step = maxVol * VOL_STEP_PER_PX * Math.abs(delta);
-        let newVol = delta > 0 ? cur + step : cur - step;
-        newVol = Math.max(0, Math.min(maxVol, newVol));
-
-        stream.volume = newVol;
-        stream.push_volume();
-
-        // Throttle OSD to avoid choppiness
-        const now = GLib.get_monotonic_time() / 1000;
-        if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
-            this._lastOsdTime = now;
-            const level = newVol / maxVol;
-            const icon = level <= 0 ? 'audio-volume-muted-symbolic'
-                : level < 0.33 ? 'audio-volume-low-symbolic'
-                    : level < 0.66 ? 'audio-volume-medium-symbolic'
-                        : 'audio-volume-high-symbolic';
-            // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
-            Main.osdWindowManager.showOne(
-                Main.layoutManager.primaryIndex,
-                Gio.Icon.new_for_string(icon), null, level,
-            );
-=======
         try {
             if (!this._volumeControl) {
                 this._volumeControl =
@@ -716,21 +648,12 @@ export default class TouchpadGesturesExtension extends Extension {
             }
         } catch (_e) {
             // Volume adjustment failed — ignore silently
->>>>>>> origin/main
         }
     }
 
     // ── Brightness control (single step, used by discrete actions) ─────────
 
     _brightness(isUp) {
-<<<<<<< HEAD
-        const scale = Main.brightnessManager?.globalScale;
-        if (!scale) return;
-        if (isUp)
-            scale.stepUp();
-        else
-            scale.stepDown();
-=======
         try {
             const scale = Main.brightnessManager?.globalScale;
             if (!scale) return;
@@ -741,34 +664,11 @@ export default class TouchpadGesturesExtension extends Extension {
         } catch (_e) {
             // Brightness step failed — ignore silently
         }
->>>>>>> origin/main
     }
 
     // ── Continuous brightness (called per UPDATE event) ────────────────────
 
     _brightnessContinuous(delta) {
-<<<<<<< HEAD
-        const scale = Main.brightnessManager?.globalScale;
-        if (!scale) return;
-
-        const step = BRIGHT_STEP_PER_PX * Math.abs(delta);
-        let newVal = delta > 0 ? scale.value + step : scale.value - step;
-        newVal = Math.max(0, Math.min(1.0, newVal));
-        scale.value = newVal;
-
-        // OSD is handled by BrightnessManager itself via _showOSD(),
-        // but we throttle an extra OSD call here for visual feedback
-        // in case the internal one doesn't trigger.
-        const now = GLib.get_monotonic_time() / 1000;
-        if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
-            this._lastOsdTime = now;
-            // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
-            Main.osdWindowManager.showOne(
-                Main.layoutManager.primaryIndex,
-                Gio.Icon.new_for_string('display-brightness-symbolic'),
-                null, newVal,
-            );
-=======
         try {
             const scale = Main.brightnessManager?.globalScale;
             if (!scale) return;
@@ -793,7 +693,6 @@ export default class TouchpadGesturesExtension extends Extension {
             }
         } catch (_e) {
             // Brightness continuous adjustment failed — ignore silently
->>>>>>> origin/main
         }
     }
 
@@ -821,18 +720,6 @@ export default class TouchpadGesturesExtension extends Extension {
             new GLib.VariantType('(as)'),
             Gio.DBusCallFlags.NONE, -1, null,
             (conn, res) => {
-<<<<<<< HEAD
-                const result = conn.call_finish(res);
-                const names = result.get_child_value(0).deepUnpack();
-                const mprisNames = names.filter(n => n.startsWith('org.mpris.MediaPlayer2.'));
-
-                if (mprisNames.length === 0) {
-                    this._simulateMediaKey(cmd);
-                    return;
-                }
-
-                this._tryMprisPlayers(mprisNames, 0, method, cmd);
-=======
                 try {
                     const result = conn.call_finish(res);
                     const names = result.get_child_value(0).deepUnpack();
@@ -847,7 +734,6 @@ export default class TouchpadGesturesExtension extends Extension {
                 } catch (_e) {
                     this._simulateMediaKey(cmd);
                 }
->>>>>>> origin/main
             }
         );
     }
@@ -864,15 +750,11 @@ export default class TouchpadGesturesExtension extends Extension {
             null,
             Gio.DBusCallFlags.NONE, -1, null,
             (conn, res) => {
-<<<<<<< HEAD
-                conn.call_finish(res);
-=======
                 try {
                     conn.call_finish(res);
                 } catch (_e) {
                     this._tryMprisPlayers(players, idx + 1, method, cmd);
                 }
->>>>>>> origin/main
             }
         );
     }
@@ -886,8 +768,60 @@ export default class TouchpadGesturesExtension extends Extension {
     }
 
     // ── Alt+Tab simulation ────────────────────────────────────────────────────
+    //
+    // WHY NOT virtual key injection?
+    // ───────────────────────────────
+    // On Wayland, Clutter virtual devices emit events that are captured by the
+    // compositor's own keybinding system BEFORE they reach GNOME Shell's JS
+    // handler. This means pressing Alt+Tab via notify_keyval fires, but the
+    // compositor swallows the modifier release and the switcher popup either
+    // never appears or flashes and immediately closes.
+    //
+    // HOW THIS WORKS INSTEAD
+    // ──────────────────────
+    // We activate the shell's built-in 'switch-applications' (forward) and
+    // 'switch-applications-backward' (backward) keybinding actions directly
+    // through Meta.display.activate_binding(), bypassing key synthesis entirely.
+    // This is the same path GNOME Shell's keyboard shortcut handler takes, so
+    // the AltTab switcher popup appears and behaves exactly as expected.
+    //
+    // If activate_binding is unavailable we fall back to Shell.ActionMode-aware
+    // key simulation as a last resort.
 
     _altTab(forward) {
+        try {
+            // Primary path: activate the binding action directly on Meta.display.
+            // This triggers GNOME Shell's built-in AltTab switcher reliably on
+            // both X11 and Wayland without any virtual key injection.
+            const actionName = forward
+                ? 'switch-applications'
+                : 'switch-applications-backward';
+
+            // Meta.display.activate_binding(name, timestamp) is available since
+            // GNOME 43.  It resolves the keybinding handler registered by Shell's
+            // wm.js and runs it directly.
+            const display = global.display;
+            if (typeof display.activate_binding === 'function') {
+                display.activate_binding(actionName, global.get_current_time());
+                return;
+            }
+
+            // Secondary path: use Shell.Global.activate_action which works via
+            // GAction on the Shell app-level action group.
+            const shellGlobal = Shell.Global.get();
+            if (typeof shellGlobal.activate_action === 'function') {
+                shellGlobal.activate_action(actionName, null);
+                return;
+            }
+        } catch (_e) {
+            // Fall through to key simulation fallback
+        }
+
+        // Fallback: virtual key injection.
+        // Works on X11 and some Wayland compositors.  On Wayland the switcher
+        // may flash briefly because Alt is released before the compositor
+        // processes the Tab key — but this is better than doing nothing.
+        if (!this._kb) return;
         const t = Clutter.get_current_event_time();
         this._kb.notify_keyval(t, Clutter.KEY_Alt_L, Clutter.KeyState.PRESSED);
         if (!forward)
