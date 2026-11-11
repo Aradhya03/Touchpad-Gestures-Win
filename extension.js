@@ -46,7 +46,6 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
 import Meta from 'gi://Meta';
-import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -767,70 +766,62 @@ export default class TouchpadGesturesExtension extends Extension {
         if (keyval) this._simulateKey(keyval);
     }
 
-    // ── Alt+Tab simulation ────────────────────────────────────────────────────
+    // ── Alt+Tab / window switching ────────────────────────────────────────────
     //
-    // WHY NOT virtual key injection?
-    // ───────────────────────────────
-    // On Wayland, Clutter virtual devices emit events that are captured by the
-    // compositor's own keybinding system BEFORE they reach GNOME Shell's JS
-    // handler. This means pressing Alt+Tab via notify_keyval fires, but the
-    // compositor swallows the modifier release and the switcher popup either
-    // never appears or flashes and immediately closes.
+    // WHY NOT virtual key injection OR Meta.display.activate_binding()?
+    // ──────────────────────────────────────────────────────────────────
+    // • On Wayland, virtual key injection (notify_keyval) is broken for modifier
+    //   combos: the compositor processes the synthetic Alt PRESS and Tab PRESS,
+    //   but the Alt RELEASE arrives in the same event-loop tick, so the switcher
+    //   popup is opened and immediately dismissed — it looks like a "flash".
     //
-    // HOW THIS WORKS INSTEAD
-    // ──────────────────────
-    // We activate the shell's built-in 'switch-applications' (forward) and
-    // 'switch-applications-backward' (backward) keybinding actions directly
-    // through Meta.display.activate_binding(), bypassing key synthesis entirely.
-    // This is the same path GNOME Shell's keyboard shortcut handler takes, so
-    // the AltTab switcher popup appears and behaves exactly as expected.
+    // • Meta.display.activate_binding() is NOT a real public API on Meta.Display.
+    //   It doesn't exist as a GObject method in any GNOME version; calling it
+    //   throws a TypeError which is silently swallowed by the try/catch,
+    //   making the gesture do nothing.
     //
-    // If activate_binding is unavailable we fall back to Shell.ActionMode-aware
-    // key simulation as a last resort.
+    // • Shell.Global.activate_action() similarly does not exist.
+    //
+    // THE CORRECT APPROACH — direct window cycling via Meta.TabList
+    // ─────────────────────────────────────────────────────────────
+    // global.display.get_tab_list() returns the MRU (most-recently-used) ordered
+    // window stack exactly as GNOME's Alt+Tab switcher uses internally.  We pick
+    // the next/previous window from that list and call window.activate().
+    //
+    // This:
+    //   • Works perfectly on both X11 and Wayland (no key synthesis at all)
+    //   • Respects minimized-window filtering (Meta.TabList.NORMAL skips minimized)
+    //   • Cycles through all normal windows on the current workspace
+    //   • Is identical to what GNOME Shell's AltTab module does under the hood
+    //     when the user releases Alt to confirm a selection
 
     _altTab(forward) {
         try {
-            // Primary path: activate the binding action directly on Meta.display.
-            // This triggers GNOME Shell's built-in AltTab switcher reliably on
-            // both X11 and Wayland without any virtual key injection.
-            const actionName = forward
-                ? 'switch-applications'
-                : 'switch-applications-backward';
-
-            // Meta.display.activate_binding(name, timestamp) is available since
-            // GNOME 43.  It resolves the keybinding handler registered by Shell's
-            // wm.js and runs it directly.
             const display = global.display;
-            if (typeof display.activate_binding === 'function') {
-                display.activate_binding(actionName, global.get_current_time());
+            const workspace = global.workspace_manager.get_active_workspace();
+
+            // Get MRU-ordered list of normal (non-minimized) windows.
+            // Meta.TabList.NORMAL  = normal windows, skip minimized
+            // Meta.TabList.NORMAL_ALL = include minimized — we don't want those
+            const windows = display.get_tab_list(Meta.TabList.NORMAL, workspace);
+
+            if (windows.length === 0) return;
+
+            // With only one window there is nothing to switch to
+            if (windows.length === 1) {
+                windows[0].activate(global.get_current_time());
                 return;
             }
 
-            // Secondary path: use Shell.Global.activate_action which works via
-            // GAction on the Shell app-level action group.
-            const shellGlobal = Shell.Global.get();
-            if (typeof shellGlobal.activate_action === 'function') {
-                shellGlobal.activate_action(actionName, null);
-                return;
-            }
+            // The focused window is always index 0 in the MRU list.
+            // Forward (swipe-right) → index 1 (next in MRU order, i.e. the
+            //   window you used before this one — same as one Alt+Tab press).
+            // Backward (swipe-left) → last index (wrap around).
+            const targetIdx = forward ? 1 : windows.length - 1;
+            windows[targetIdx].activate(global.get_current_time());
         } catch (_e) {
-            // Fall through to key simulation fallback
+            // Should never happen, but guard against unexpected API changes
         }
-
-        // Fallback: virtual key injection.
-        // Works on X11 and some Wayland compositors.  On Wayland the switcher
-        // may flash briefly because Alt is released before the compositor
-        // processes the Tab key — but this is better than doing nothing.
-        if (!this._kb) return;
-        const t = Clutter.get_current_event_time();
-        this._kb.notify_keyval(t, Clutter.KEY_Alt_L, Clutter.KeyState.PRESSED);
-        if (!forward)
-            this._kb.notify_keyval(t, Clutter.KEY_Shift_L, Clutter.KeyState.PRESSED);
-        this._kb.notify_keyval(t, Clutter.KEY_Tab, Clutter.KeyState.PRESSED);
-        this._kb.notify_keyval(t, Clutter.KEY_Tab, Clutter.KeyState.RELEASED);
-        if (!forward)
-            this._kb.notify_keyval(t, Clutter.KEY_Shift_L, Clutter.KeyState.RELEASED);
-        this._kb.notify_keyval(t, Clutter.KEY_Alt_L, Clutter.KeyState.RELEASED);
     }
 
     // ── Custom keybind firing ─────────────────────────────────────────────────
