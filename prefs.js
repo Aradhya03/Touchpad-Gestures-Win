@@ -302,15 +302,10 @@ export default class TouchpadGesturesPreferences extends ExtensionPreferences {
             dialog.present();
 
             // Inhibit system shortcuts AFTER present() so the surface exists
-<<<<<<< HEAD
-            const surface = dialog.get_surface?.() ?? null;
-            if (surface) surface.inhibit_system_shortcuts(null);
-=======
             try {
                 const surface = dialog.get_surface?.() ?? null;
                 if (surface) surface.inhibit_system_shortcuts(null);
             } catch (_) { }
->>>>>>> origin/main
         });
 
         clearBtn.connect('clicked', () => {
