@@ -93,6 +93,13 @@ export default class TouchpadGesturesExtension extends Extension {
         // OSD throttle timestamp
         this._lastOsdTime = 0;
 
+        // ── Alt+Tab cycle state ───────────────────────────────────────────────
+        // We freeze the MRU window list on the first swipe of a session so that
+        // forward swipes can walk through ALL windows without MRU reordering
+        // causing the index to bounce between the same two windows.
+        this._altTabWindows = null;   // frozen snapshot of MRU list for this session
+        this._altTabIndex = 0;        // current position in that snapshot
+        this._altTabResetId = null;   // GLib timer ID to reset session after inactivity
 
         // Track pending idle/timeout source IDs for cleanup in disable()
         this._pendingSources = new Set();
@@ -796,32 +803,92 @@ export default class TouchpadGesturesExtension extends Extension {
     //     when the user releases Alt to confirm a selection
 
     _altTab(forward) {
+        // ── WHY WE NEED A FROZEN WINDOW LIST ─────────────────────────────────
+        // get_tab_list() returns windows in MRU (most-recently-used) order.
+        // The focused window is always at index 0.  Calling window.activate()
+        // promotes that window to index 0, so the list reorders on every swipe.
+        //
+        // Consequence without freezing (the previous bug):
+        //   Windows: [A, B, C, D]  (A focused)
+        //   Swipe → activate index 1 = B.  MRU becomes [B, A, C, D]
+        //   Swipe → activate index 1 = A.  MRU becomes [A, B, C, D]
+        //   → forever bouncing between A and B, never reaching C or D.
+        //
+        // Fix: snapshot the MRU list on the FIRST swipe of a session, then
+        // walk a persistent index through that frozen snapshot.  The snapshot
+        // is cleared after 2 s of inactivity so the next session starts fresh.
         try {
             const display = global.display;
             const workspace = global.workspace_manager.get_active_workspace();
+            const liveWindows = display.get_tab_list(Meta.TabList.NORMAL, workspace);
 
-            // Get MRU-ordered list of normal (non-minimized) windows.
-            // Meta.TabList.NORMAL  = normal windows, skip minimized
-            // Meta.TabList.NORMAL_ALL = include minimized — we don't want those
-            const windows = display.get_tab_list(Meta.TabList.NORMAL, workspace);
-
-            if (windows.length === 0) return;
-
-            // With only one window there is nothing to switch to
-            if (windows.length === 1) {
-                windows[0].activate(global.get_current_time());
+            if (liveWindows.length === 0) return;
+            if (liveWindows.length === 1) {
+                liveWindows[0].activate(global.get_current_time());
                 return;
             }
 
-            // The focused window is always index 0 in the MRU list.
-            // Forward (swipe-right) → index 1 (next in MRU order, i.e. the
-            //   window you used before this one — same as one Alt+Tab press).
-            // Backward (swipe-left) → last index (wrap around).
-            const targetIdx = forward ? 1 : windows.length - 1;
-            windows[targetIdx].activate(global.get_current_time());
+            // Decide whether we're continuing an existing cycle session or
+            // starting a fresh one.
+            //
+            // We're "continuing" when the currently focused window is exactly
+            // the one we last activated from our frozen list.  If the user
+            // clicked somewhere else (or a window closed), we start over.
+            const focused = display.get_focus_window();
+            const continuing =
+                this._altTabWindows !== null &&
+                this._altTabIndex < this._altTabWindows.length &&
+                this._altTabWindows[this._altTabIndex] === focused;
+
+            if (!continuing) {
+                // Fresh session — freeze the current MRU order.
+                // Index 0 = the currently focused window.
+                this._altTabWindows = liveWindows.slice();
+                this._altTabIndex = 0;
+            }
+
+            // Advance or retreat the cursor inside the frozen list (wrapping).
+            const len = this._altTabWindows.length;
+            if (forward) {
+                this._altTabIndex = (this._altTabIndex + 1) % len;
+            } else {
+                this._altTabIndex = (this._altTabIndex - 1 + len) % len;
+            }
+
+            const target = this._altTabWindows[this._altTabIndex];
+
+            // Guard: the window may have been closed since we froze the list.
+            // If so, rebuild the snapshot and try again.
+            if (!target || target.is_skip_taskbar?.()) {
+                this._altTabWindows = null;
+                this._altTab(forward);
+                return;
+            }
+
+            target.activate(global.get_current_time());
+
+            // Reschedule the inactivity reset timer.
+            this._scheduleAltTabReset();
         } catch (_e) {
-            // Should never happen, but guard against unexpected API changes
+            // Guard against unexpected API changes
         }
+    }
+
+    // Reset the Alt+Tab cycle session after 2 s of no swipe activity.
+    _scheduleAltTabReset() {
+        if (this._altTabResetId) {
+            GLib.source_remove(this._altTabResetId);
+            this._pendingSources?.delete(this._altTabResetId);
+            this._altTabResetId = null;
+        }
+        this._altTabResetId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+            this._pendingSources?.delete(this._altTabResetId);
+            this._altTabWindows = null;
+            this._altTabIndex = 0;
+            this._altTabResetId = null;
+            return GLib.SOURCE_REMOVE;
+        });
+        this._pendingSources?.add(this._altTabResetId);
     }
 
     // ── Custom keybind firing ─────────────────────────────────────────────────
