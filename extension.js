@@ -1,47 +1,3 @@
-/**
- * extension.js  —  Custom Touchpad Gestures
- * uuid: touchpad-gestures@alpha.com
- *
- * Tested on: GNOME Shell 50 / Ubuntu 26.04 / Wayland
- *
- * KEY DESIGN DECISIONS
- * ════════════════════
- * 1. Uses 'captured-event::touchpad' (detail-filtered capture phase signal)
- *    to intercept touchpad events BEFORE GNOME's built-in handlers see them.
- *    Returning EVENT_STOP from capture phase prevents bubble-phase handlers.
- *
- * 2. Disables GNOME's built-in swipe trackers at THREE levels:
- *    a) Sets tracker.enabled = false on each SwipeTracker
- *    b) Sets tracker._touchpadGesture.enabled = false (inner gesture object)
- *    c) Disconnects the _touchpadGesture from global.stage via destroy()
- *    This ensures GNOME never processes our touchpad events.
- *
- * 3. Uses GNOME Shell 50 API:
- *    - w.is_maximized() instead of removed w.get_maximized()
- *    - w.maximize() / w.unmaximize() without Meta.MaximizeFlags
- *
- * 4. Delta accumulation across UPDATE phases, direction resolved at END.
- *
- * 5. Hold events detect multi-finger taps (short hold → tap).
- *
- * 6. Actions dispatched via GLib.idle_add to avoid re-entrancy.
- *
- * 7. Volume via Gvc.MixerControl, brightness via D-Bus, media via MPRIS.
- * 8. Volume/Brightness respond continuously during swipe UPDATE phase.
- *
- * ALT+TAB DESIGN
- * ══════════════
- * Virtual key injection of Alt+Tab does not work reliably on Wayland because
- * the compositor intercepts the shortcut before the virtual device event reaches
- * the GNOME Shell keybinding handler.  Instead we drive GNOME's own SwitcherList
- * directly:
- *   - forward  (swipe-right) → activates the next-window action via
- *     Main.wm.handleWorkspaceSwitch / the internal AltTab handler.
- *   - backward (swipe-left)  → activates the prev-window action.
- * We call Main.wm._startSwitcher() / Main.wm._stopSwitcher() so the visual
- * switcher popup appears exactly as if the keyboard shortcut was pressed.
- */
-
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
@@ -49,21 +5,16 @@ import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// ── Swipe detection threshold (accumulated px) ────────────────────────────────
 const SWIPE_THRESHOLD = 15;
 
-// ── Tap detection: max duration in ms for a hold to count as tap ──────────────
 const TAP_MAX_DURATION_MS = 500;
 
-// ── Volume/Brightness step per swipe-update delta pixel ───────────────────────
 const VOL_STEP_PER_PX = 0.0012;
 const BRIGHT_STEP_PER_PX = 0.0012;
 const OSD_THROTTLE_MS = 120;
 
-// ── MPRIS D-Bus interface XML ─────────────────────────────────────────────────
 const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 
-// ── Action indices — MUST match dropdown order in prefs.js ───────────────────
 const V = { ACTIVITIES: 0, VOLUME: 1, BRIGHTNESS: 2, MAX_MIN: 3, CLOSE: 4, SHOW_DESKTOP: 5, CUSTOM: 6, DISABLED: 7 };
 const L = { WS_LEFT: 0, BRIGHT_DOWN: 1, ALTTAB_PREV: 2, MEDIA_PREV: 3, CUSTOM: 4, DISABLED: 5 };
 const R = { WS_RIGHT: 0, BRIGHT_UP: 1, ALTTAB_NEXT: 2, MEDIA_NEXT: 3, CUSTOM: 4, DISABLED: 5 };
@@ -76,62 +27,47 @@ export default class TouchpadGesturesExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
 
-        // Virtual keyboard for key simulation
         const seat = Clutter.get_default_backend().get_default_seat();
         this._kb = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
 
-        // Gesture state
         this._dx = 0;
         this._dy = 0;
         this._holdStartTime = 0;
         this._holdFingers = 0;
 
-        // Continuous swipe state (for volume/brightness during UPDATE)
-        this._swipeContinuousAction = null; // 'volume' | 'brightness' | null
+        this._swipeContinuousAction = null;
         this._swipeDirectionLocked = false;
 
-        // OSD throttle timestamp
         this._lastOsdTime = 0;
 
-        // ── Alt+Tab cycle state ───────────────────────────────────────────────
-        // We freeze the MRU window list on the first swipe of a session so that
-        // forward swipes can walk through ALL windows without MRU reordering
-        // causing the index to bounce between the same two windows.
-        this._altTabWindows = null;   // frozen snapshot of MRU list for this session
-        this._altTabIndex = 0;        // current position in that snapshot
-        this._altTabResetId = null;   // GLib timer ID to reset session after inactivity
+        this._altTabWindows = null;
+        this._altTabIndex = 0;
+        this._altTabResetId = null;
 
-        // Track pending idle/timeout source IDs for cleanup in disable()
         this._pendingSources = new Set();
 
-        // ── Volume subsystem — reuse Shell's built-in MixerControl ────────────
         this._volumeControl = null;
 
-        // ── Disable ALL built-in swipe trackers ──────────────────────────────
         this._savedTrackerState = [];
         this._disableBuiltinTrackers();
 
-        // Re-disable after shell startup
         if (Main.layoutManager._startingUp) {
             Main.layoutManager.connectObject('startup-complete', () => {
                 this._disableBuiltinTrackers();
             }, this);
         }
 
-        // Re-disable on overview state changes
         Main.overview.connectObject(
             'showing', () => this._disableBuiltinTrackers(),
             'hidden', () => this._disableBuiltinTrackers(),
             this,
         );
 
-        // Watchdog: re-disable trackers periodically
         this._watchdogId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
             this._disableBuiltinTrackers();
             return GLib.SOURCE_CONTINUE;
         });
 
-        // ── Connect to touchpad events using detail-filtered capture signal
         this._stageSignalId = global.stage.connect(
             'captured-event::touchpad',
             (_actor, event) => this._onEvent(event)
@@ -154,7 +90,6 @@ export default class TouchpadGesturesExtension extends Extension {
         Main.layoutManager.disconnectObject(this);
         Main.overview.disconnectObject(this);
 
-        // Remove all pending idle/timeout sources
         if (this._pendingSources) {
             for (const srcId of this._pendingSources) {
                 GLib.source_remove(srcId);
@@ -169,7 +104,6 @@ export default class TouchpadGesturesExtension extends Extension {
         this._volumeControl = null;
     }
 
-    // ── GNOME tracker management
     _disableBuiltinTrackers() {
         const trackerGetters = [
             () => Main.overview?._swipeTracker,
@@ -185,7 +119,6 @@ export default class TouchpadGesturesExtension extends Extension {
                 const tracker = getter();
                 if (!tracker) continue;
 
-                // Only save state first time we see this tracker
                 if (!this._savedTrackerState.some(s => s.tracker === tracker)) {
                     this._savedTrackerState.push({
                         tracker,
@@ -194,21 +127,18 @@ export default class TouchpadGesturesExtension extends Extension {
                     });
                 }
 
-                // Level 1: Disable the SwipeTracker itself
                 if (tracker.enabled !== undefined)
                     tracker.enabled = false;
 
-                // Level 2: Disable the internal TouchpadSwipeGesture
                 if (tracker._touchpadGesture) {
                     tracker._touchpadGesture.enabled = false;
                 }
 
-                // Level 3: Disable internal PanGesture action
                 if (tracker._panGesture) {
                     tracker._panGesture.enabled = false;
                 }
             } catch (e) {
-                // Path doesn't exist on this GNOME version — ignore
+
             }
         }
     }
@@ -227,17 +157,13 @@ export default class TouchpadGesturesExtension extends Extension {
         this._savedTrackerState = [];
     }
 
-    // ── Raw event handler ─────────────────────────────────────────────────────
-
     _onEvent(event) {
         const type = event.type();
 
-        // ── Touchpad SWIPE ────────────────────────────────────────────────────
         if (type === Clutter.EventType.TOUCHPAD_SWIPE) {
             const n = event.get_touchpad_gesture_finger_count();
             const phase = event.get_gesture_phase();
 
-            // Only handle 3 and 4 finger gestures
             if (n < 3 || n > 4) return Clutter.EVENT_PROPAGATE;
 
             if (phase === Clutter.TouchpadGesturePhase.BEGIN) {
@@ -255,7 +181,6 @@ export default class TouchpadGesturesExtension extends Extension {
                 this._dx += dx;
                 this._dy += dy;
 
-                // Once we pass threshold, lock direction and check if continuous
                 if (!this._swipeDirectionLocked) {
                     const adx = Math.abs(this._dx);
                     const ady = Math.abs(this._dy);
@@ -271,7 +196,6 @@ export default class TouchpadGesturesExtension extends Extension {
                         const actionType = this._settings.get_int(`${key}-action`);
                         this._swipeKey = key;
 
-                        // Determine if this is a continuous action
                         const isVert = direction === 'swipe-up' || direction === 'swipe-down';
                         if (isVert && actionType === V.VOLUME)
                             this._swipeContinuousAction = 'volume';
@@ -286,14 +210,12 @@ export default class TouchpadGesturesExtension extends Extension {
                     }
                 }
 
-                // For continuous actions, apply delta on every update
                 if (this._swipeContinuousAction === 'volume') {
-                    this._volumeContinuous(-dy); // negative dy = swipe up = volume up
+                    this._volumeContinuous(-dy);
                     return Clutter.EVENT_STOP;
                 }
                 if (this._swipeContinuousAction === 'brightness') {
-                    // For vertical swipes use -dy (up = brighter)
-                    // For horizontal swipes use dx (right = brighter, left = dimmer)
+
                     const isHorizontal = this._swipeKey?.includes('swipe-left') ||
                         this._swipeKey?.includes('swipe-right');
                     const brightDelta = isHorizontal ? dx : -dy;
@@ -307,7 +229,6 @@ export default class TouchpadGesturesExtension extends Extension {
             if (phase === Clutter.TouchpadGesturePhase.END ||
                 phase === Clutter.TouchpadGesturePhase.CANCEL) {
 
-                // If it was a continuous action, we already applied it during UPDATE
                 if (this._swipeContinuousAction) {
                     this._swipeContinuousAction = null;
                     this._dx = 0;
@@ -329,7 +250,7 @@ export default class TouchpadGesturesExtension extends Extension {
                     const key = `${prefix}-${direction}`;
                     this._idleExec(() => this._executeAction(key));
                 } else if (phase === Clutter.TouchpadGesturePhase.END) {
-                    // Small swipe (under threshold) might actually be a tap
+
                     const elapsed = (GLib.get_monotonic_time() - this._swipeStartTime) / 1000;
                     if (elapsed <= TAP_MAX_DURATION_MS) {
                         const key = `${prefix}-tap`;
@@ -345,7 +266,6 @@ export default class TouchpadGesturesExtension extends Extension {
             return Clutter.EVENT_STOP;
         }
 
-        // ── Touchpad HOLD (tap detection) ─────────────────────────────────────
         if (type === Clutter.EventType.TOUCHPAD_HOLD) {
             const n = event.get_touchpad_gesture_finger_count();
             const phase = event.get_gesture_phase();
@@ -381,8 +301,6 @@ export default class TouchpadGesturesExtension extends Extension {
             return Clutter.EVENT_STOP;
         }
 
-        // ── Fallback tap detection via Pointer Buttons ────────────────────────
-        // libinput translates 3-finger taps to middle click, and sometimes 4-finger to other buttons.
         if (type === Clutter.EventType.BUTTON_RELEASE) {
             const device = event.get_source_device();
             if (device && device.get_device_type() === Clutter.InputDeviceType.TOUCHPAD_DEVICE) {
@@ -391,7 +309,7 @@ export default class TouchpadGesturesExtension extends Extension {
                 if (button === 2) {
                     key = 'three-tap';
                 } else if (button === 8 || button === 9) {
-                    // Just in case 4-finger tap maps to 8/9
+
                     key = 'four-tap';
                 }
 
@@ -405,12 +323,6 @@ export default class TouchpadGesturesExtension extends Extension {
         return Clutter.EVENT_PROPAGATE;
     }
 
-    // ── Action dispatch ───────────────────────────────────────────────────────
-
-    /**
-     * Schedule a callback via GLib.idle_add, tracking the source ID
-     * so it can be removed in disable() if still pending.
-     */
     _idleExec(fn) {
         const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             this._pendingSources?.delete(id);
@@ -431,32 +343,25 @@ export default class TouchpadGesturesExtension extends Extension {
         const isTap = key.endsWith('tap');
         const isVert = isUp || isDown;
 
-        // ── Overview/App-Grid hierarchical navigation ─────────────────────
-        // When inside the overview or app grid, vertical swipes navigate
-        // the hierarchy:  Desktop  ↔  Activities  ↔  App Grid
-        //   • swipe-up  progresses forward  (desktop→activities→app grid)
-        //   • swipe-down regresses backward (app grid→activities→desktop)
-        // This intercepts BEFORE the normal configured action so the
-        // configured swipe-down action only fires from the desktop.
         if (isVert && Main.overview.visible) {
             const inAppGrid = this._isAppGridVisible();
 
             if (isUp) {
-                // Already in overview — check if we should open app grid
+
                 if (!inAppGrid) {
-                    // On activities page → open app grid
+
                     this._showAppGrid();
                 }
-                // If already on app grid, do nothing (top of hierarchy)
+
                 return;
             }
 
             if (isDown) {
                 if (inAppGrid) {
-                    // On app grid → go back to activities page
+
                     this._hideAppGrid();
                 } else {
-                    // On activities page → close overview, back to desktop
+
                     Main.overview.hide();
                 }
                 return;
@@ -467,7 +372,7 @@ export default class TouchpadGesturesExtension extends Extension {
             if (actionType < 0 || actionType > MAX_V) return;
             switch (actionType) {
                 case V.ACTIVITIES:
-                    // From desktop: open activities overview
+
                     Main.overview.show();
                     break;
                 case V.VOLUME:
@@ -480,10 +385,10 @@ export default class TouchpadGesturesExtension extends Extension {
                     const w = global.display.get_focus_window();
                     if (!w) break;
                     if (isUp) {
-                        // GNOME 50: maximize() takes no args
+
                         w.maximize();
                     } else {
-                        // GNOME 50: is_maximized() replaces get_maximized()
+
                         if (w.is_maximized())
                             w.unmaximize();
                         else
@@ -502,7 +407,7 @@ export default class TouchpadGesturesExtension extends Extension {
                 case V.CUSTOM:
                     this._fireKeybind(key);
                     break;
-                // V.DISABLED: do nothing
+
             }
             return;
         }
@@ -543,8 +448,6 @@ export default class TouchpadGesturesExtension extends Extension {
         }
     }
 
-    // ── Workspace switching ───────────────────────────────────────────────────
-
     _switchWorkspace(forward) {
         const wm = global.workspace_manager;
         const cur = wm.get_active_workspace_index();
@@ -553,24 +456,10 @@ export default class TouchpadGesturesExtension extends Extension {
             wm.get_workspace_by_index(idx).activate(global.get_current_time());
     }
 
-    // ── App grid detection & navigation ───────────────────────────────────
-    // These helpers enable hierarchical traversal:
-    //   Desktop  ↔  Activities Overview  ↔  App Grid
-
-    /**
-     * Returns true if the app grid is currently showing.
-     * Uses the dash "Show Apps" button's checked state which reflects
-     * whether the overview is in app-grid mode.
-     */
     _isAppGridVisible() {
         return Main.overview.dash?.showAppsButton?.checked === true;
     }
 
-    /**
-     * Transition from activities overview to app grid.
-     * Sets the dash showAppsButton to checked, which triggers the
-     * ControlsManager to animate into APP_GRID state.
-     */
     _showAppGrid() {
         const btn = Main.overview.dash?.showAppsButton;
         if (btn) {
@@ -578,19 +467,12 @@ export default class TouchpadGesturesExtension extends Extension {
         }
     }
 
-    /**
-     * Transition from app grid back to activities overview.
-     * Un-checks the dash showAppsButton, which triggers the
-     * ControlsManager to animate back to WINDOW_PICKER state.
-     */
     _hideAppGrid() {
         const btn = Main.overview.dash?.showAppsButton;
         if (btn) {
             btn.checked = false;
         }
     }
-
-    // ── Show desktop ──────────────────────────────────────────────────────────
 
     _showDesktop() {
         const ws = global.workspace_manager.get_active_workspace();
@@ -599,8 +481,6 @@ export default class TouchpadGesturesExtension extends Extension {
             .forEach(w => w.minimize());
     }
 
-    // ── Media keys simulation ──────────────────────────────────────────────────
-
     _simulateKey(keyval) {
         if (!this._kb) return;
         const t = Clutter.get_current_event_time();
@@ -608,13 +488,9 @@ export default class TouchpadGesturesExtension extends Extension {
         this._kb.notify_keyval(t, keyval, Clutter.KeyState.RELEASED);
     }
 
-    // ── Volume control (single step, used by discrete actions) ─────────────
-
     _volume(isUp) {
         this._volumeContinuous(isUp ? 3 : -3);
     }
-
-    // ── Continuous volume (called per UPDATE event) ────────────────────────
 
     _volumeContinuous(delta) {
         try {
@@ -637,7 +513,6 @@ export default class TouchpadGesturesExtension extends Extension {
             stream.volume = newVol;
             stream.push_volume();
 
-            // Throttle OSD to avoid choppiness
             const now = GLib.get_monotonic_time() / 1000;
             if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
                 this._lastOsdTime = now;
@@ -646,18 +521,16 @@ export default class TouchpadGesturesExtension extends Extension {
                     : level < 0.33 ? 'audio-volume-low-symbolic'
                         : level < 0.66 ? 'audio-volume-medium-symbolic'
                             : 'audio-volume-high-symbolic';
-                // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
+
                 Main.osdWindowManager.showOne(
                     Main.layoutManager.primaryIndex,
                     Gio.Icon.new_for_string(icon), null, level,
                 );
             }
         } catch (_e) {
-            // Volume adjustment failed — ignore silently
+
         }
     }
-
-    // ── Brightness control (single step, used by discrete actions) ─────────
 
     _brightness(isUp) {
         try {
@@ -668,11 +541,9 @@ export default class TouchpadGesturesExtension extends Extension {
             else
                 scale.stepDown();
         } catch (_e) {
-            // Brightness step failed — ignore silently
+
         }
     }
-
-    // ── Continuous brightness (called per UPDATE event) ────────────────────
 
     _brightnessContinuous(delta) {
         try {
@@ -684,13 +555,10 @@ export default class TouchpadGesturesExtension extends Extension {
             newVal = Math.max(0, Math.min(1.0, newVal));
             scale.value = newVal;
 
-            // OSD is handled by BrightnessManager itself via _showOSD(),
-            // but we throttle an extra OSD call here for visual feedback
-            // in case the internal one doesn't trigger.
             const now = GLib.get_monotonic_time() / 1000;
             if (now - this._lastOsdTime > OSD_THROTTLE_MS) {
                 this._lastOsdTime = now;
-                // GNOME 50 API: showOne(monitorIndex, icon, label, level, maxLevel)
+
                 Main.osdWindowManager.showOne(
                     Main.layoutManager.primaryIndex,
                     Gio.Icon.new_for_string('display-brightness-symbolic'),
@@ -698,11 +566,9 @@ export default class TouchpadGesturesExtension extends Extension {
                 );
             }
         } catch (_e) {
-            // Brightness continuous adjustment failed — ignore silently
+
         }
     }
-
-    // ── Media control via MPRIS D-Bus ─────────────────────────────────────
 
     _media(cmd) {
         let method;
@@ -716,7 +582,6 @@ export default class TouchpadGesturesExtension extends Extension {
             return;
         }
 
-        // For play-pause: use MPRIS D-Bus only (no key simulation)
         Gio.DBus.session.call(
             'org.freedesktop.DBus',
             '/org/freedesktop/DBus',
@@ -773,50 +638,8 @@ export default class TouchpadGesturesExtension extends Extension {
         if (keyval) this._simulateKey(keyval);
     }
 
-    // ── Alt+Tab / window switching ────────────────────────────────────────────
-    //
-    // WHY NOT virtual key injection OR Meta.display.activate_binding()?
-    // ──────────────────────────────────────────────────────────────────
-    // • On Wayland, virtual key injection (notify_keyval) is broken for modifier
-    //   combos: the compositor processes the synthetic Alt PRESS and Tab PRESS,
-    //   but the Alt RELEASE arrives in the same event-loop tick, so the switcher
-    //   popup is opened and immediately dismissed — it looks like a "flash".
-    //
-    // • Meta.display.activate_binding() is NOT a real public API on Meta.Display.
-    //   It doesn't exist as a GObject method in any GNOME version; calling it
-    //   throws a TypeError which is silently swallowed by the try/catch,
-    //   making the gesture do nothing.
-    //
-    // • Shell.Global.activate_action() similarly does not exist.
-    //
-    // THE CORRECT APPROACH — direct window cycling via Meta.TabList
-    // ─────────────────────────────────────────────────────────────
-    // global.display.get_tab_list() returns the MRU (most-recently-used) ordered
-    // window stack exactly as GNOME's Alt+Tab switcher uses internally.  We pick
-    // the next/previous window from that list and call window.activate().
-    //
-    // This:
-    //   • Works perfectly on both X11 and Wayland (no key synthesis at all)
-    //   • Respects minimized-window filtering (Meta.TabList.NORMAL skips minimized)
-    //   • Cycles through all normal windows on the current workspace
-    //   • Is identical to what GNOME Shell's AltTab module does under the hood
-    //     when the user releases Alt to confirm a selection
-
     _altTab(forward) {
-        // ── WHY WE NEED A FROZEN WINDOW LIST ─────────────────────────────────
-        // get_tab_list() returns windows in MRU (most-recently-used) order.
-        // The focused window is always at index 0.  Calling window.activate()
-        // promotes that window to index 0, so the list reorders on every swipe.
-        //
-        // Consequence without freezing (the previous bug):
-        //   Windows: [A, B, C, D]  (A focused)
-        //   Swipe → activate index 1 = B.  MRU becomes [B, A, C, D]
-        //   Swipe → activate index 1 = A.  MRU becomes [A, B, C, D]
-        //   → forever bouncing between A and B, never reaching C or D.
-        //
-        // Fix: snapshot the MRU list on the FIRST swipe of a session, then
-        // walk a persistent index through that frozen snapshot.  The snapshot
-        // is cleared after 2 s of inactivity so the next session starts fresh.
+
         try {
             const display = global.display;
             const workspace = global.workspace_manager.get_active_workspace();
@@ -828,12 +651,6 @@ export default class TouchpadGesturesExtension extends Extension {
                 return;
             }
 
-            // Decide whether we're continuing an existing cycle session or
-            // starting a fresh one.
-            //
-            // We're "continuing" when the currently focused window is exactly
-            // the one we last activated from our frozen list.  If the user
-            // clicked somewhere else (or a window closed), we start over.
             const focused = display.get_focus_window();
             const continuing =
                 this._altTabWindows !== null &&
@@ -841,13 +658,11 @@ export default class TouchpadGesturesExtension extends Extension {
                 this._altTabWindows[this._altTabIndex] === focused;
 
             if (!continuing) {
-                // Fresh session — freeze the current MRU order.
-                // Index 0 = the currently focused window.
+
                 this._altTabWindows = liveWindows.slice();
                 this._altTabIndex = 0;
             }
 
-            // Advance or retreat the cursor inside the frozen list (wrapping).
             const len = this._altTabWindows.length;
             if (forward) {
                 this._altTabIndex = (this._altTabIndex + 1) % len;
@@ -857,8 +672,6 @@ export default class TouchpadGesturesExtension extends Extension {
 
             const target = this._altTabWindows[this._altTabIndex];
 
-            // Guard: the window may have been closed since we froze the list.
-            // If so, rebuild the snapshot and try again.
             if (!target || target.is_skip_taskbar?.()) {
                 this._altTabWindows = null;
                 this._altTab(forward);
@@ -867,14 +680,12 @@ export default class TouchpadGesturesExtension extends Extension {
 
             target.activate(global.get_current_time());
 
-            // Reschedule the inactivity reset timer.
             this._scheduleAltTabReset();
         } catch (_e) {
-            // Guard against unexpected API changes
+
         }
     }
 
-    // Reset the Alt+Tab cycle session after 2 s of no swipe activity.
     _scheduleAltTabReset() {
         if (this._altTabResetId) {
             GLib.source_remove(this._altTabResetId);
@@ -891,8 +702,6 @@ export default class TouchpadGesturesExtension extends Extension {
         this._pendingSources?.add(this._altTabResetId);
     }
 
-    // ── Custom keybind firing ─────────────────────────────────────────────────
-
     _fireKeybind(gestureKey) {
         const stored = this._settings?.get_string(`${gestureKey}-keybind`);
         if (!stored || !stored.includes(':')) return;
@@ -902,11 +711,8 @@ export default class TouchpadGesturesExtension extends Extension {
         const mods = parseInt(parts[1], 10);
         if (!keyval) return;
 
-
-
         const kb = this._kb;
 
-        // Gdk.ModifierType bitmask values (GTK4)
         const GDK_SHIFT_MASK = 1;
         const GDK_LOCK_MASK = 2;
         const GDK_CONTROL_MASK = 4;
@@ -918,7 +724,6 @@ export default class TouchpadGesturesExtension extends Extension {
         let t = global.get_current_time();
         if (!t) t = GLib.get_monotonic_time() / 1000;
 
-        // Press modifier keys first
         if (mods & GDK_SHIFT_MASK) kb.notify_keyval(t, Clutter.KEY_Shift_L, Clutter.KeyState.PRESSED);
         if (mods & GDK_CONTROL_MASK) kb.notify_keyval(t, Clutter.KEY_Control_L, Clutter.KeyState.PRESSED);
         if (mods & GDK_ALT_MASK) kb.notify_keyval(t, Clutter.KEY_Alt_L, Clutter.KeyState.PRESSED);
@@ -926,13 +731,11 @@ export default class TouchpadGesturesExtension extends Extension {
         if (mods & GDK_HYPER_MASK) kb.notify_keyval(t, Clutter.KEY_Hyper_L, Clutter.KeyState.PRESSED);
         if (mods & GDK_META_MASK) kb.notify_keyval(t, Clutter.KEY_Meta_L, Clutter.KeyState.PRESSED);
 
-        // Press and release the main key
         t += 1;
         kb.notify_keyval(t, keyval, Clutter.KeyState.PRESSED);
         t += 1;
         kb.notify_keyval(t, keyval, Clutter.KeyState.RELEASED);
 
-        // Release modifier keys (reverse order)
         t += 1;
         if (mods & GDK_META_MASK) kb.notify_keyval(t, Clutter.KEY_Meta_L, Clutter.KeyState.RELEASED);
         if (mods & GDK_HYPER_MASK) kb.notify_keyval(t, Clutter.KEY_Hyper_L, Clutter.KeyState.RELEASED);
