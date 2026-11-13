@@ -1,0 +1,13 @@
+# Compiled GSettings schemas (must not be committed or shipped in packages)
+schemas/gschemas.compiled
+
+# Distribution packages
+*.zip
+*.tar.gz
+*.shell-extension.zip
+
+# Editor and OS temporary files
+.DS_Store
+Thumbs.db
+*~
+*.swp
